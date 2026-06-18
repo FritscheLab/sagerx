@@ -88,6 +88,14 @@ The access and secret-access keys can be found in 2 ways:
 - Click 'Create access key', select the 'Command Line Interface' option, click Next, fill in a name for the keys, click 'Create access keys', then download the .csv file and save it in safe place
 - Open the .csv file, then paste the access key and secret access key into the .env file as described above
 
+### Exporting SageRx Dev to DuckDB
+
+The `export_sagerx_dev_duckdb` DAG exports every table, view, and materialized view in the Postgres `sagerx_dev` schema into a single DuckDB database. By default, trigger the DAG manually from Airflow and it will write:
+
+`airflow/exports/sagerx_dev.duckdb`
+
+The DAG accepts optional Airflow run params: `source_schema`, `dest_schema`, `output_path`, and `chunk_size`.
+
 ### Integration with Google Cloud Platform (GCP)
 
 Currently we are utilizing 2 GCP products: Google Cloud Storage (GCS) and BigQuery (BQ).
