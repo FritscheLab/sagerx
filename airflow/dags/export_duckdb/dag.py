@@ -1,3 +1,6 @@
+import hashlib
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -14,6 +17,7 @@ DEST_SCHEMA = "sagerx_dev"
 DEFAULT_OUTPUT_PATH = "/opt/airflow/exports/sagerx.duckdb"
 DEFAULT_CHUNK_SIZE = 100_000
 POSTGRES_SOURCE_ALIAS = "pg_source"
+HASH_CHUNK_SIZE = 1024 * 1024
 
 RELATIONS_SQL = sqlalchemy.text(
     """
@@ -292,6 +296,35 @@ def _positive_int(value, default):
     return parsed if parsed > 0 else default
 
 
+def _file_sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(HASH_CHUNK_SIZE), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _metadata_path(output_path):
+    return Path(output_path.as_posix().replace(".duckdb", ".json"))
+
+
+def _write_export_metadata(output_path, created_at):
+    metadata_path = _metadata_path(output_path)
+    temp_metadata_path = metadata_path.with_name(f".{metadata_path.name}.tmp")
+    metadata = {
+        "created_at": created_at.isoformat().replace("+00:00", "Z"),
+        "duckdb_file": output_path.name,
+        "duckdb_sha256": _file_sha256(output_path),
+    }
+
+    with temp_metadata_path.open("w", encoding="utf-8") as file:
+        json.dump(metadata, file, indent=2, sort_keys=True)
+        file.write("\n")
+
+    temp_metadata_path.replace(metadata_path)
+    return metadata_path, metadata
+
+
 dag = create_dag(
     dag_id="export_duckdb",
     schedule=None,
@@ -424,13 +457,21 @@ with dag:
                 duckdb_connection.close()
 
         temp_path.replace(output_path)
+        created_at = datetime.now(timezone.utc)
+        metadata_path, metadata = _write_export_metadata(output_path, created_at)
 
         print(
             f"Exported {len(relations)} relations and {total_rows} rows "
             f"from {source_schema} to {output_path}"
         )
+        print(
+            f"Wrote metadata to {metadata_path} "
+            f"with SHA-256 {metadata['duckdb_sha256']}"
+        )
         return {
             "output_path": str(output_path),
+            "metadata_path": str(metadata_path),
+            "duckdb_sha256": metadata["duckdb_sha256"],
             "relation_count": len(relations),
             "row_count": total_rows,
         }
