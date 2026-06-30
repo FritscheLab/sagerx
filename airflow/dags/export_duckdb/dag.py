@@ -18,6 +18,7 @@ DEFAULT_OUTPUT_PATH = "/opt/airflow/exports/sagerx.duckdb"
 DEFAULT_CHUNK_SIZE = 100_000
 POSTGRES_SOURCE_ALIAS = "pg_source"
 HASH_CHUNK_SIZE = 1024 * 1024
+POSTGRES_JSON_TYPES = {"json", "jsonb"}
 
 RELATIONS_SQL = sqlalchemy.text(
     """
@@ -189,6 +190,124 @@ def _duckdb_type_and_cast(column):
     return duckdb_type, cast_to_text
 
 
+def _postgres_columns(pg_connection, source_schema, relation_name):
+    return [
+        dict(row)
+        for row in pg_connection.execute(
+            COLUMNS_SQL,
+            {"schema_name": source_schema, "relation_name": relation_name},
+        ).mappings()
+    ]
+
+
+def _is_json_column(column):
+    return (
+        column["data_type"] in POSTGRES_JSON_TYPES
+        or column["udt_name"] in POSTGRES_JSON_TYPES
+    )
+
+
+def _json_structure_is_nested(structure):
+    if structure is None:
+        return False
+
+    try:
+        parsed = json.loads(structure)
+    except (TypeError, json.JSONDecodeError):
+        return False
+
+    return isinstance(parsed, (dict, list))
+
+
+def _json_transform_structure(duckdb_connection, relation, column_name):
+    duckdb_column = _duckdb_identifier(column_name)
+    structure = duckdb_connection.execute(
+        "select json_group_structure("
+        f"{duckdb_column}::JSON)::VARCHAR "
+        f"from {relation} "
+        f"where {duckdb_column} is not null"
+    ).fetchone()[0]
+    return structure if _json_structure_is_nested(structure) else None
+
+
+def _json_temp_relation_name(relation_name):
+    digest = hashlib.sha1(relation_name.encode("utf-8")).hexdigest()[:12]
+    return f"__export_duckdb_json_{digest}"
+
+
+def _materialize_json_columns(
+    duckdb_connection,
+    schema_name,
+    catalog_name,
+    relation_name,
+    columns,
+):
+    json_columns = [column for column in columns if _is_json_column(column)]
+    if not json_columns:
+        return []
+
+    relation = _duckdb_relation(schema_name, relation_name, catalog_name)
+    transform_structures = {}
+    for column in json_columns:
+        column_name = column["column_name"]
+        try:
+            structure = _json_transform_structure(
+                duckdb_connection, relation, column_name
+            )
+        except Exception as structure_error:
+            print(
+                "Could not infer DuckDB JSON structure for "
+                f"{relation_name}.{column_name}: {structure_error}"
+            )
+            continue
+
+        if structure is not None:
+            transform_structures[column_name] = structure
+
+    if not transform_structures:
+        return []
+
+    temp_relation_name = _json_temp_relation_name(relation_name)
+    temp_relation = _duckdb_relation(schema_name, temp_relation_name, catalog_name)
+    select_expressions = []
+    for column in columns:
+        column_name = column["column_name"]
+        duckdb_column = _duckdb_identifier(column_name)
+        if column_name in transform_structures:
+            structure_literal = _duckdb_string_literal(
+                transform_structures[column_name]
+            )
+            select_expressions.append(
+                f"json_transform({duckdb_column}::JSON, {structure_literal}) "
+                f"as {duckdb_column}"
+            )
+        else:
+            select_expressions.append(duckdb_column)
+
+    duckdb_connection.execute(f"drop table if exists {temp_relation}")
+    duckdb_connection.execute("begin transaction")
+    try:
+        duckdb_connection.execute(
+            f"create table {temp_relation} as "
+            f"select {', '.join(select_expressions)} from {relation}"
+        )
+        duckdb_connection.execute(f"drop table {relation}")
+        duckdb_connection.execute(
+            f"alter table {temp_relation} "
+            f"rename to {_duckdb_identifier(relation_name)}"
+        )
+        duckdb_connection.execute("commit")
+    except Exception as transform_error:
+        duckdb_connection.execute("rollback")
+        print(
+            "Could not materialize JSON columns as DuckDB nested types for "
+            f"{relation_name}: {transform_error}"
+        )
+        return []
+
+    return list(transform_structures)
+
+
 def _load_postgres_extension(duckdb_connection):
     try:
         duckdb_connection.execute("install postgres")
@@ -241,16 +360,9 @@ def _export_relation_with_pandas(
     dest_schema,
     dest_catalog,
     relation_name,
+    columns,
     chunk_size,
 ):
-    columns = [
-        dict(row)
-        for row in pg_connection.execute(
-            COLUMNS_SQL,
-            {"schema_name": source_schema, "relation_name": relation_name},
-        ).mappings()
-    ]
-
     dest_relation = _duckdb_relation(dest_schema, relation_name, dest_catalog)
     column_definitions = []
     select_columns = []
@@ -402,6 +514,9 @@ with dag:
                 for relation in relations:
                     relation_name = relation["relation_name"]
                     relation_type = relation["relation_type"]
+                    columns = _postgres_columns(
+                        pg_connection, source_schema, relation_name
+                    )
                     print(f"Exporting {source_schema}.{relation_name} ({relation_type})")
 
                     if use_postgres_extension:
@@ -432,6 +547,7 @@ with dag:
                                 dest_schema,
                                 dest_catalog,
                                 relation_name,
+                                columns,
                                 chunk_size,
                             )
                     else:
@@ -443,7 +559,22 @@ with dag:
                             dest_schema,
                             dest_catalog,
                             relation_name,
+                            columns,
                             chunk_size,
+                        )
+
+                    materialized_json_columns = _materialize_json_columns(
+                        duckdb_connection,
+                        dest_schema,
+                        dest_catalog,
+                        relation_name,
+                        columns,
+                    )
+                    if materialized_json_columns:
+                        print(
+                            "Materialized JSON columns as DuckDB nested types for "
+                            f"{source_schema}.{relation_name}: "
+                            f"{', '.join(materialized_json_columns)}"
                         )
 
                     total_rows += row_count
