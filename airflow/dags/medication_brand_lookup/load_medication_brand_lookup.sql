@@ -680,18 +680,6 @@ related_ingredients as (
 product_atc as (
 
     select distinct
-        cp.rxcui,
-        a.atc_3_code,
-        a.atc_3_name,
-        a.atc_4_code,
-        a.atc_4_name
-    from concept_products cp
-    inner join sagerx_dev.atc_codes_to_rxnorm_products a
-        on cp.product_rxcui = a.rxcui
-
-    union
-
-    select distinct
         a.rxcui,
         a.atc_3_code,
         a.atc_3_name,
@@ -702,18 +690,6 @@ product_atc as (
 ),
 
 ingredient_atc as (
-
-    select distinct
-        ci.rxcui,
-        a.atc_3_code,
-        a.atc_3_name,
-        a.atc_4_code,
-        a.atc_4_name
-    from concept_ingredients ci
-    inner join sagerx_dev.stg_rxnorm__atc_codes a
-        on ci.ingredient_rxcui = a.ingredient_rxcui
-
-    union
 
     select distinct
         a.ingredient_rxcui as rxcui,
