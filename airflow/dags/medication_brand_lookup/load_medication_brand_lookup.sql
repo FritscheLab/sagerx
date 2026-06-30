@@ -423,6 +423,27 @@ clinical_product_ingredients as (
 
 ),
 
+precise_ingredient_forms as (
+
+    select distinct
+        pin.rxcui as precise_ingredient_rxcui,
+        pin.name as precise_ingredient_name,
+        pin.tty as precise_ingredient_tty,
+        base_ingredient.rxcui as ingredient_rxcui,
+        base_ingredient.str as ingredient_name,
+        base_ingredient.tty as ingredient_tty
+    from sagerx_dev.stg_rxnorm__precise_ingredients pin
+    inner join sagerx_lake.rxnorm_rxnrel form_rel
+        on pin.rxcui = form_rel.rxcui1
+       and form_rel.rela = 'has_form'
+       and form_rel.sab = 'RXNORM'
+    inner join sagerx_lake.rxnorm_rxnconso base_ingredient
+        on form_rel.rxcui2 = base_ingredient.rxcui
+       and base_ingredient.tty = 'IN'
+       and base_ingredient.sab = 'RXNORM'
+
+),
+
 concept_to_clinical_products as (
 
     select distinct
@@ -462,6 +483,17 @@ concept_to_clinical_products as (
         cpi.clinical_product_tty
     from clinical_product_ingredients cpi
     where cpi.ingredient_rxcui is not null
+
+    union
+
+    select distinct
+        pif.precise_ingredient_rxcui as rxcui,
+        cpi.clinical_product_rxcui,
+        cpi.clinical_product_name,
+        cpi.clinical_product_tty
+    from precise_ingredient_forms pif
+    inner join clinical_product_ingredients cpi
+        on pif.ingredient_rxcui = cpi.ingredient_rxcui
 
     union
 
@@ -550,6 +582,17 @@ concept_ingredients as (
         cpi.ingredient_role
     from clinical_product_ingredients cpi
     where cpi.ingredient_rxcui is not null
+
+    union
+
+    select distinct
+        pif.precise_ingredient_rxcui as rxcui,
+        pif.ingredient_rxcui,
+        pif.ingredient_name,
+        pif.ingredient_tty,
+        'base_ingredient_form' as ingredient_role
+    from precise_ingredient_forms pif
+    where pif.ingredient_rxcui is not null
 
 ),
 
@@ -818,6 +861,17 @@ uses_grouped as (
     from uses u
     group by u.rxcui
 
+),
+
+inactive_ingredient_concepts as (
+
+    -- Product-context DailyMed/SPL signal: the RXCUI appears as inactive
+    -- in at least one product, but may still be active in another product.
+    select distinct
+        pii.inactive_ingredient_rxcui as rxcui
+    from sagerx_dev.products_to_inactive_ingredients pii
+    where pii.inactive_ingredient_rxcui is not null
+
 )
 
 select
@@ -826,6 +880,7 @@ select
     c.rxcui_tty,
     c.active,
     c.prescribable,
+    iic.rxcui is not null as is_inactive_ingredient,
     rcp.related_clinical_products,
     rp.related_products,
     ri.related_ingredients,
@@ -853,7 +908,9 @@ left join ingredient_atc_level_3 ia3
 left join ingredient_atc_level_4 ia4
     on c.rxcui = ia4.rxcui
 left join uses_grouped ug
-    on c.rxcui = ug.rxcui;
+    on c.rxcui = ug.rxcui
+left join inactive_ingredient_concepts iic
+    on c.rxcui = iic.rxcui;
 
 drop index if exists sagerx_dev.medication_rxcui_lookup_rxcui_idx;
 create unique index medication_rxcui_lookup_rxcui_idx
