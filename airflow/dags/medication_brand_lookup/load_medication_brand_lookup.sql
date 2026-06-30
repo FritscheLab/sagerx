@@ -871,6 +871,88 @@ ingredient_atc_level_4 as (
 
 ),
 
+related_product_atc as (
+
+    select distinct
+        cp.rxcui,
+        pa.atc_3_code,
+        pa.atc_3_name,
+        pa.atc_4_code,
+        pa.atc_4_name
+    from concept_products cp
+    inner join product_atc pa
+        on cp.product_rxcui = pa.rxcui
+
+),
+
+inferred_related_product_atc_level_3 as (
+
+    select
+        x.rxcui,
+        jsonb_agg(
+            jsonb_build_object(
+                'code', x.atc_3_code,
+                'name', x.atc_3_name
+            )
+            order by x.atc_3_code, x.atc_3_name
+        ) as related_product_atc_level_3_candidates,
+        case
+            when count(*) = 1 then jsonb_agg(
+                jsonb_build_object(
+                    'code', x.atc_3_code,
+                    'name', x.atc_3_name
+                )
+                order by x.atc_3_code, x.atc_3_name
+            )
+        end as inferred_related_product_atc_level_3,
+        count(*) > 1 as related_product_atc_level_3_ambiguous
+    from (
+        select distinct
+            rpa.rxcui,
+            rpa.atc_3_code,
+            rpa.atc_3_name
+        from related_product_atc rpa
+        where rpa.atc_3_code is not null
+          and rpa.atc_3_name is not null
+    ) x
+    group by x.rxcui
+
+),
+
+inferred_related_product_atc_level_4 as (
+
+    select
+        x.rxcui,
+        jsonb_agg(
+            jsonb_build_object(
+                'code', x.atc_4_code,
+                'name', x.atc_4_name
+            )
+            order by x.atc_4_code, x.atc_4_name
+        ) as related_product_atc_level_4_candidates,
+        case
+            when count(*) = 1 then jsonb_agg(
+                jsonb_build_object(
+                    'code', x.atc_4_code,
+                    'name', x.atc_4_name
+                )
+                order by x.atc_4_code, x.atc_4_name
+            )
+        end as inferred_related_product_atc_level_4,
+        count(*) > 1 as related_product_atc_level_4_ambiguous
+    from (
+        select distinct
+            rpa.rxcui,
+            rpa.atc_4_code,
+            rpa.atc_4_name
+        from related_product_atc rpa
+        where rpa.atc_4_code is not null
+          and rpa.atc_4_name is not null
+    ) x
+    group by x.rxcui
+
+),
+
 uses as (
 
     select distinct
@@ -953,8 +1035,22 @@ select
     pa4.product_atc_level_4,
     ia3.ingredient_atc_level_3,
     ia4.ingredient_atc_level_4,
-    coalesce(pa3.product_atc_level_3, ia3.ingredient_atc_level_3) as preferred_atc_level_3,
-    coalesce(pa4.product_atc_level_4, ia4.ingredient_atc_level_4) as preferred_atc_level_4,
+    coalesce(
+        pa3.product_atc_level_3,
+        ia3.ingredient_atc_level_3,
+        irpa3.inferred_related_product_atc_level_3
+    ) as preferred_atc_level_3,
+    coalesce(
+        pa4.product_atc_level_4,
+        ia4.ingredient_atc_level_4,
+        irpa4.inferred_related_product_atc_level_4
+    ) as preferred_atc_level_4,
+    irpa3.related_product_atc_level_3_candidates,
+    irpa4.related_product_atc_level_4_candidates,
+    irpa3.inferred_related_product_atc_level_3,
+    irpa4.inferred_related_product_atc_level_4,
+    coalesce(irpa3.related_product_atc_level_3_ambiguous, false) as related_product_atc_level_3_ambiguous,
+    coalesce(irpa4.related_product_atc_level_4_ambiguous, false) as related_product_atc_level_4_ambiguous,
     ug.typical_uses_may_treat,
     ug.typical_uses_may_prevent
 from rxnorm_concepts c
@@ -974,6 +1070,10 @@ left join ingredient_atc_level_3 ia3
     on c.rxcui = ia3.rxcui
 left join ingredient_atc_level_4 ia4
     on c.rxcui = ia4.rxcui
+left join inferred_related_product_atc_level_3 irpa3
+    on c.rxcui = irpa3.rxcui
+left join inferred_related_product_atc_level_4 irpa4
+    on c.rxcui = irpa4.rxcui
 left join uses_grouped ug
     on c.rxcui = ug.rxcui
 left join inactive_ingredient_concepts iic
