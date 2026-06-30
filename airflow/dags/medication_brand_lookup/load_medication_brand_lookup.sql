@@ -800,14 +800,28 @@ ingredient_atc_level_4 as (
 uses as (
 
     select distinct
-        ccp.rxcui,
+        cp.clinical_product_rxcui as rxcui,
         d.rela,
         d.disease_name
-    from concept_clinical_products ccp
+    from clinical_products cp
     inner join sagerx_dev.clinical_products_to_diseases d
-        on ccp.clinical_product_rxcui = d.clinical_product_rxcui
+        on cp.clinical_product_rxcui = d.clinical_product_rxcui
     where d.rela in ('may_treat', 'may_prevent')
       and d.disease_name is not null
+
+    union
+
+    select distinct
+        p.product_rxcui as rxcui,
+        d.rela,
+        d.disease_name
+    from products p
+    inner join sagerx_dev.clinical_products_to_diseases d
+        on p.clinical_product_rxcui = d.clinical_product_rxcui
+    where d.rela in ('may_treat', 'may_prevent')
+      and d.disease_name is not null
+      and p.product_rxcui is not null
+      and p.clinical_product_rxcui is not null
 
     union
 
