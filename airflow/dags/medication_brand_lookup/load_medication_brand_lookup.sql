@@ -543,6 +543,80 @@ concept_clinical_products as (
 
 ),
 
+generic_name_candidates as (
+
+    select distinct
+        c.rxcui,
+        c.rxcui_name as generic_name,
+        1 as priority
+    from rxnorm_concepts c
+    where c.rxcui_tty in ('SCD', 'GPCK', 'SCDC', 'SCDF', 'IN', 'MIN', 'PIN')
+
+    union
+
+    select distinct
+        p.product_rxcui as rxcui,
+        p.clinical_product_name as generic_name,
+        1 as priority
+    from products p
+    where p.product_tty in ('SBD', 'BPCK')
+      and p.product_rxcui is not null
+      and p.clinical_product_name is not null
+
+    union
+
+    select distinct
+        brand.rxcui,
+        ingredient.str as generic_name,
+        1 as priority
+    from sagerx_lake.rxnorm_rxnconso brand
+    inner join sagerx_lake.rxnorm_rxnrel generic_rel
+        on generic_rel.rxcui2 = brand.rxcui
+       and generic_rel.rela = 'tradename_of'
+       and generic_rel.sab = 'RXNORM'
+    inner join sagerx_lake.rxnorm_rxnconso ingredient
+        on generic_rel.rxcui1 = ingredient.rxcui
+       and ingredient.tty in ('IN', 'MIN')
+       and ingredient.sab = 'RXNORM'
+    where brand.tty = 'BN'
+      and brand.sab = 'RXNORM'
+
+    union
+
+    select distinct
+        ccp.rxcui,
+        ccp.clinical_product_name as generic_name,
+        2 as priority
+    from concept_clinical_products ccp
+    where ccp.clinical_product_name is not null
+
+),
+
+generic_name_ranked as (
+
+    select
+        gnc.rxcui,
+        gnc.generic_name,
+        gnc.priority,
+        min(gnc.priority) over (partition by gnc.rxcui) as best_priority
+    from generic_name_candidates gnc
+    where gnc.generic_name is not null
+
+),
+
+generic_names as (
+
+    select
+        gnr.rxcui,
+        case
+            when count(distinct gnr.generic_name) = 1 then min(gnr.generic_name)
+        end as generic_name
+    from generic_name_ranked gnr
+    where gnr.priority = gnr.best_priority
+    group by gnr.rxcui
+
+),
+
 concept_products as (
 
     select distinct
@@ -868,6 +942,7 @@ select
     c.rxcui,
     c.rxcui_name,
     c.rxcui_tty,
+    gn.generic_name,
     c.active,
     c.prescribable,
     iic.rxcui is not null as is_inactive_ingredient,
@@ -883,6 +958,8 @@ select
     ug.typical_uses_may_treat,
     ug.typical_uses_may_prevent
 from rxnorm_concepts c
+left join generic_names gn
+    on c.rxcui = gn.rxcui
 left join related_clinical_products rcp
     on c.rxcui = rcp.rxcui
 left join related_products rp
@@ -913,3 +990,7 @@ create index medication_rxcui_lookup_rxcui_name_idx
 drop index if exists sagerx_dev.medication_rxcui_lookup_rxcui_tty_idx;
 create index medication_rxcui_lookup_rxcui_tty_idx
     on sagerx_dev.medication_rxcui_lookup (rxcui_tty);
+
+drop index if exists sagerx_dev.medication_rxcui_lookup_generic_name_idx;
+create index medication_rxcui_lookup_generic_name_idx
+    on sagerx_dev.medication_rxcui_lookup (generic_name);
