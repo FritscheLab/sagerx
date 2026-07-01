@@ -775,6 +775,43 @@ ingredient_atc as (
 
 ),
 
+direct_concept_ingredients as (
+
+    -- Keep direct ingredient ATC separate from product-neighborhood
+    -- ingredients, which can mix brand umbrella products like Tylenol PM
+    -- into the plain Tylenol brand concept.
+    select distinct
+        ia.rxcui,
+        ia.rxcui as ingredient_rxcui,
+        c.rxcui_name as ingredient_name,
+        c.rxcui_tty as ingredient_tty,
+        'self' as ingredient_role
+    from ingredient_atc ia
+    inner join rxnorm_concepts c
+        on ia.rxcui = c.rxcui
+       and c.rxcui_tty in ('IN', 'MIN')
+
+    union
+
+    select distinct
+        brand.rxcui,
+        ingredient.rxcui as ingredient_rxcui,
+        ingredient.rxcui_name as ingredient_name,
+        ingredient.rxcui_tty as ingredient_tty,
+        'direct_brand_ingredient' as ingredient_role
+    from sagerx_lake.rxnorm_rxnconso brand
+    inner join sagerx_lake.rxnorm_rxnrel generic_rel
+        on generic_rel.rxcui2 = brand.rxcui
+       and generic_rel.rela = 'tradename_of'
+       and generic_rel.sab = 'RXNORM'
+    inner join rxnorm_concepts ingredient
+        on generic_rel.rxcui1 = ingredient.rxcui
+       and ingredient.rxcui_tty in ('IN', 'MIN')
+    where brand.tty = 'BN'
+      and brand.sab = 'RXNORM'
+
+),
+
 concept_ingredient_atc as (
 
     select distinct
@@ -796,6 +833,24 @@ concept_ingredient_atc as (
         ia.atc_4_code,
         ia.atc_4_name
     from ingredient_atc ia
+
+),
+
+direct_ingredient_atc as (
+
+    select distinct
+        dci.rxcui,
+        dci.ingredient_rxcui,
+        dci.ingredient_name,
+        dci.ingredient_tty,
+        dci.ingredient_role,
+        ia.atc_3_code,
+        ia.atc_3_name,
+        ia.atc_4_code,
+        ia.atc_4_name
+    from direct_concept_ingredients dci
+    inner join ingredient_atc ia
+        on dci.ingredient_rxcui = ia.rxcui
 
 ),
 
@@ -891,6 +946,136 @@ ingredient_atc_level_4 as (
         where ia.atc_4_code is not null
           and ia.atc_4_name is not null
     ) x
+    group by x.rxcui
+
+),
+
+direct_ingredient_atc_level_3_sets as (
+
+    select
+        x.rxcui,
+        x.ingredient_rxcui,
+        x.ingredient_name,
+        x.ingredient_tty,
+        x.ingredient_role,
+        jsonb_agg(
+            jsonb_build_object(
+                'code', x.atc_3_code,
+                'name', x.atc_3_name
+            )
+            order by x.atc_3_code, x.atc_3_name
+        ) as atc_level_3
+    from (
+        select distinct
+            dia.rxcui,
+            dia.ingredient_rxcui,
+            dia.ingredient_name,
+            dia.ingredient_tty,
+            dia.ingredient_role,
+            dia.atc_3_code,
+            dia.atc_3_name
+        from direct_ingredient_atc dia
+        where dia.atc_3_code is not null
+          and dia.atc_3_name is not null
+    ) x
+    group by
+        x.rxcui,
+        x.ingredient_rxcui,
+        x.ingredient_name,
+        x.ingredient_tty,
+        x.ingredient_role
+
+),
+
+direct_ingredient_atc_level_3 as (
+
+    select
+        x.rxcui,
+        jsonb_agg(
+            jsonb_build_object(
+                'ingredient_rxcui', x.ingredient_rxcui,
+                'ingredient_name', x.ingredient_name,
+                'ingredient_tty', x.ingredient_tty,
+                'ingredient_role', x.ingredient_role,
+                'atc', x.atc_level_3
+            )
+            order by
+                x.ingredient_role,
+                x.ingredient_tty,
+                x.ingredient_name,
+                x.ingredient_rxcui
+        ) as direct_ingredient_atc_level_3_candidates,
+        case
+            when count(distinct x.atc_level_3::text) = 1
+                then min(x.atc_level_3::text)::jsonb
+        end as inferred_direct_ingredient_atc_level_3,
+        count(distinct x.atc_level_3::text) > 1 as direct_ingredient_atc_level_3_ambiguous
+    from direct_ingredient_atc_level_3_sets x
+    group by x.rxcui
+
+),
+
+direct_ingredient_atc_level_4_sets as (
+
+    select
+        x.rxcui,
+        x.ingredient_rxcui,
+        x.ingredient_name,
+        x.ingredient_tty,
+        x.ingredient_role,
+        jsonb_agg(
+            jsonb_build_object(
+                'code', x.atc_4_code,
+                'name', x.atc_4_name
+            )
+            order by x.atc_4_code, x.atc_4_name
+        ) as atc_level_4
+    from (
+        select distinct
+            dia.rxcui,
+            dia.ingredient_rxcui,
+            dia.ingredient_name,
+            dia.ingredient_tty,
+            dia.ingredient_role,
+            dia.atc_4_code,
+            dia.atc_4_name
+        from direct_ingredient_atc dia
+        where dia.atc_4_code is not null
+          and dia.atc_4_name is not null
+    ) x
+    group by
+        x.rxcui,
+        x.ingredient_rxcui,
+        x.ingredient_name,
+        x.ingredient_tty,
+        x.ingredient_role
+
+),
+
+direct_ingredient_atc_level_4 as (
+
+    select
+        x.rxcui,
+        jsonb_agg(
+            jsonb_build_object(
+                'ingredient_rxcui', x.ingredient_rxcui,
+                'ingredient_name', x.ingredient_name,
+                'ingredient_tty', x.ingredient_tty,
+                'ingredient_role', x.ingredient_role,
+                'atc', x.atc_level_4
+            )
+            order by
+                x.ingredient_role,
+                x.ingredient_tty,
+                x.ingredient_name,
+                x.ingredient_rxcui
+        ) as direct_ingredient_atc_level_4_candidates,
+        case
+            when count(distinct x.atc_level_4::text) = 1
+                then min(x.atc_level_4::text)::jsonb
+        end as inferred_direct_ingredient_atc_level_4,
+        count(distinct x.atc_level_4::text) > 1 as direct_ingredient_atc_level_4_ambiguous
+    from direct_ingredient_atc_level_4_sets x
     group by x.rxcui
 
 ),
@@ -1137,19 +1322,31 @@ select
     ia4.ingredient_atc_level_4,
     irpa3.related_product_atc_level_3_candidates,
     irpa4.related_product_atc_level_4_candidates,
+    dia3.direct_ingredient_atc_level_3_candidates,
+    dia4.direct_ingredient_atc_level_4_candidates,
+    dia3.inferred_direct_ingredient_atc_level_3,
+    dia4.inferred_direct_ingredient_atc_level_4,
     irpa3.inferred_related_product_atc_level_3,
     irpa4.inferred_related_product_atc_level_4,
+    coalesce(dia3.direct_ingredient_atc_level_3_ambiguous, false) as direct_ingredient_atc_level_3_ambiguous,
+    coalesce(dia4.direct_ingredient_atc_level_4_ambiguous, false) as direct_ingredient_atc_level_4_ambiguous,
     coalesce(irpa3.related_product_atc_level_3_ambiguous, false) as related_product_atc_level_3_ambiguous,
     coalesce(irpa4.related_product_atc_level_4_ambiguous, false) as related_product_atc_level_4_ambiguous,
     coalesce(
         pa3.product_atc_level_3,
-        ia3.ingredient_atc_level_3,
-        irpa3.inferred_related_product_atc_level_3
+        dia3.inferred_direct_ingredient_atc_level_3,
+        case
+            when dia3.direct_ingredient_atc_level_3_candidates is null
+                then irpa3.inferred_related_product_atc_level_3
+        end
     ) as preferred_atc_level_3,
     coalesce(
         pa4.product_atc_level_4,
-        ia4.ingredient_atc_level_4,
-        irpa4.inferred_related_product_atc_level_4
+        dia4.inferred_direct_ingredient_atc_level_4,
+        case
+            when dia4.direct_ingredient_atc_level_4_candidates is null
+                then irpa4.inferred_related_product_atc_level_4
+        end
     ) as preferred_atc_level_4,
     ircpu_treat.related_clinical_product_uses_may_treat_candidates,
     ircpu_prevent.related_clinical_product_uses_may_prevent_candidates,
@@ -1188,6 +1385,10 @@ left join ingredient_atc_level_3 ia3
     on c.rxcui = ia3.rxcui
 left join ingredient_atc_level_4 ia4
     on c.rxcui = ia4.rxcui
+left join direct_ingredient_atc_level_3 dia3
+    on c.rxcui = dia3.rxcui
+left join direct_ingredient_atc_level_4 dia4
+    on c.rxcui = dia4.rxcui
 left join inferred_related_product_atc_level_3 irpa3
     on c.rxcui = irpa3.rxcui
 left join inferred_related_product_atc_level_4 irpa4
