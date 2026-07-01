@@ -1009,6 +1009,82 @@ uses_grouped as (
 
 ),
 
+related_clinical_product_uses as (
+
+    select
+        ccp.rxcui,
+        ccp.clinical_product_rxcui,
+        ccp.clinical_product_name,
+        ccp.clinical_product_tty,
+        d.rela,
+        array_agg(distinct d.disease_name order by d.disease_name) as disease_names
+    from concept_clinical_products ccp
+    inner join sagerx_dev.clinical_products_to_diseases d
+        on ccp.clinical_product_rxcui = d.clinical_product_rxcui
+       and d.rela in ('may_treat', 'may_prevent')
+       and d.disease_name is not null
+    where ccp.clinical_product_rxcui is not null
+    group by
+        ccp.rxcui,
+        ccp.clinical_product_rxcui,
+        ccp.clinical_product_name,
+        ccp.clinical_product_tty,
+        d.rela
+
+),
+
+inferred_related_clinical_product_uses as (
+
+    select
+        rcpu.rxcui,
+        rcpu.rela,
+        jsonb_agg(
+            jsonb_build_object(
+                'clinical_product_rxcui', rcpu.clinical_product_rxcui,
+                'clinical_product_name', rcpu.clinical_product_name,
+                'clinical_product_tty', rcpu.clinical_product_tty,
+                'diseases', to_jsonb(rcpu.disease_names)
+            )
+            order by
+                rcpu.clinical_product_tty,
+                rcpu.clinical_product_name,
+                rcpu.clinical_product_rxcui
+        ) as related_clinical_product_uses_candidates,
+        case
+            when count(distinct rcpu.disease_names) = 1 then max(rcpu.disease_names)
+        end as inferred_related_clinical_product_uses,
+        count(distinct rcpu.disease_names) > 1 as related_clinical_product_uses_ambiguous
+    from related_clinical_product_uses rcpu
+    group by
+        rcpu.rxcui,
+        rcpu.rela
+
+),
+
+inferred_related_clinical_product_uses_may_treat as (
+
+    select
+        ircpu.rxcui,
+        ircpu.related_clinical_product_uses_candidates as related_clinical_product_uses_may_treat_candidates,
+        ircpu.inferred_related_clinical_product_uses as inferred_related_clinical_product_uses_may_treat,
+        ircpu.related_clinical_product_uses_ambiguous as related_clinical_product_uses_may_treat_ambiguous
+    from inferred_related_clinical_product_uses ircpu
+    where ircpu.rela = 'may_treat'
+
+),
+
+inferred_related_clinical_product_uses_may_prevent as (
+
+    select
+        ircpu.rxcui,
+        ircpu.related_clinical_product_uses_candidates as related_clinical_product_uses_may_prevent_candidates,
+        ircpu.inferred_related_clinical_product_uses as inferred_related_clinical_product_uses_may_prevent,
+        ircpu.related_clinical_product_uses_ambiguous as related_clinical_product_uses_may_prevent_ambiguous
+    from inferred_related_clinical_product_uses ircpu
+    where ircpu.rela = 'may_prevent'
+
+),
+
 inactive_ingredient_concepts as (
 
     -- Product-context DailyMed/SPL signal: the RXCUI appears as inactive
@@ -1035,6 +1111,12 @@ select
     pa4.product_atc_level_4,
     ia3.ingredient_atc_level_3,
     ia4.ingredient_atc_level_4,
+    irpa3.related_product_atc_level_3_candidates,
+    irpa4.related_product_atc_level_4_candidates,
+    irpa3.inferred_related_product_atc_level_3,
+    irpa4.inferred_related_product_atc_level_4,
+    coalesce(irpa3.related_product_atc_level_3_ambiguous, false) as related_product_atc_level_3_ambiguous,
+    coalesce(irpa4.related_product_atc_level_4_ambiguous, false) as related_product_atc_level_4_ambiguous,
     coalesce(
         pa3.product_atc_level_3,
         ia3.ingredient_atc_level_3,
@@ -1045,14 +1127,26 @@ select
         ia4.ingredient_atc_level_4,
         irpa4.inferred_related_product_atc_level_4
     ) as preferred_atc_level_4,
-    irpa3.related_product_atc_level_3_candidates,
-    irpa4.related_product_atc_level_4_candidates,
-    irpa3.inferred_related_product_atc_level_3,
-    irpa4.inferred_related_product_atc_level_4,
-    coalesce(irpa3.related_product_atc_level_3_ambiguous, false) as related_product_atc_level_3_ambiguous,
-    coalesce(irpa4.related_product_atc_level_4_ambiguous, false) as related_product_atc_level_4_ambiguous,
-    ug.typical_uses_may_treat,
-    ug.typical_uses_may_prevent
+    ircpu_treat.related_clinical_product_uses_may_treat_candidates,
+    ircpu_prevent.related_clinical_product_uses_may_prevent_candidates,
+    ircpu_treat.inferred_related_clinical_product_uses_may_treat,
+    ircpu_prevent.inferred_related_clinical_product_uses_may_prevent,
+    coalesce(
+        ircpu_treat.related_clinical_product_uses_may_treat_ambiguous,
+        false
+    ) as related_clinical_product_uses_may_treat_ambiguous,
+    coalesce(
+        ircpu_prevent.related_clinical_product_uses_may_prevent_ambiguous,
+        false
+    ) as related_clinical_product_uses_may_prevent_ambiguous,
+    coalesce(
+        ug.typical_uses_may_treat,
+        ircpu_treat.inferred_related_clinical_product_uses_may_treat
+    ) as typical_uses_may_treat,
+    coalesce(
+        ug.typical_uses_may_prevent,
+        ircpu_prevent.inferred_related_clinical_product_uses_may_prevent
+    ) as typical_uses_may_prevent
 from rxnorm_concepts c
 left join generic_names gn
     on c.rxcui = gn.rxcui
@@ -1076,6 +1170,10 @@ left join inferred_related_product_atc_level_4 irpa4
     on c.rxcui = irpa4.rxcui
 left join uses_grouped ug
     on c.rxcui = ug.rxcui
+left join inferred_related_clinical_product_uses_may_treat ircpu_treat
+    on c.rxcui = ircpu_treat.rxcui
+left join inferred_related_clinical_product_uses_may_prevent ircpu_prevent
+    on c.rxcui = ircpu_prevent.rxcui
 left join inactive_ingredient_concepts iic
     on c.rxcui = iic.rxcui;
 
