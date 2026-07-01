@@ -775,6 +775,30 @@ ingredient_atc as (
 
 ),
 
+concept_ingredient_atc as (
+
+    select distinct
+        ci.rxcui,
+        ia.atc_3_code,
+        ia.atc_3_name,
+        ia.atc_4_code,
+        ia.atc_4_name
+    from concept_ingredients ci
+    inner join ingredient_atc ia
+        on ci.ingredient_rxcui = ia.rxcui
+
+    union
+
+    select distinct
+        ia.rxcui,
+        ia.atc_3_code,
+        ia.atc_3_name,
+        ia.atc_4_code,
+        ia.atc_4_name
+    from ingredient_atc ia
+
+),
+
 product_atc_level_3 as (
 
     select
@@ -839,7 +863,7 @@ ingredient_atc_level_3 as (
             ia.rxcui,
             ia.atc_3_code,
             ia.atc_3_name
-        from ingredient_atc ia
+        from concept_ingredient_atc ia
         where ia.atc_3_code is not null
           and ia.atc_3_name is not null
     ) x
@@ -863,7 +887,7 @@ ingredient_atc_level_4 as (
             ia.rxcui,
             ia.atc_4_code,
             ia.atc_4_name
-        from ingredient_atc ia
+        from concept_ingredient_atc ia
         where ia.atc_4_code is not null
           and ia.atc_4_name is not null
     ) x
