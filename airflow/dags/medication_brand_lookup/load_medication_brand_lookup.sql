@@ -543,6 +543,63 @@ concept_clinical_products as (
 
 ),
 
+concept_ingredients as (
+
+    select distinct
+        ccp.rxcui,
+        cpi.ingredient_rxcui,
+        cpi.ingredient_name,
+        cpi.ingredient_tty,
+        cpi.ingredient_role
+    from concept_clinical_products ccp
+    inner join clinical_product_ingredients cpi
+        on ccp.clinical_product_rxcui = cpi.clinical_product_rxcui
+    where cpi.ingredient_rxcui is not null
+
+    union
+
+    select distinct
+        cpi.ingredient_rxcui as rxcui,
+        cpi.ingredient_rxcui,
+        cpi.ingredient_name,
+        cpi.ingredient_tty,
+        cpi.ingredient_role
+    from clinical_product_ingredients cpi
+    where cpi.ingredient_rxcui is not null
+
+    union
+
+    select distinct
+        pif.precise_ingredient_rxcui as rxcui,
+        pif.ingredient_rxcui,
+        pif.ingredient_name,
+        pif.ingredient_tty,
+        'base_ingredient_form' as ingredient_role
+    from precise_ingredient_forms pif
+    where pif.ingredient_rxcui is not null
+
+),
+
+concept_ingredient_generic_names as (
+
+    -- Product-level RxNorm names include strength and dose form. Use only
+    -- base ingredient concepts when deriving a display generic name.
+    select
+        x.rxcui,
+        string_agg(x.ingredient_name, ' / ' order by x.ingredient_name) as generic_name
+    from (
+        select distinct
+            ci.rxcui,
+            ci.ingredient_name
+        from concept_ingredients ci
+        where ci.ingredient_role = 'ingredient'
+          and ci.ingredient_tty in ('IN', 'MIN')
+          and ci.ingredient_name is not null
+    ) x
+    group by x.rxcui
+
+),
+
 generic_name_candidates as (
 
     select distinct
@@ -550,18 +607,7 @@ generic_name_candidates as (
         c.rxcui_name as generic_name,
         1 as priority
     from rxnorm_concepts c
-    where c.rxcui_tty in ('SCD', 'GPCK', 'SCDC', 'SCDF', 'IN', 'MIN', 'PIN')
-
-    union
-
-    select distinct
-        p.product_rxcui as rxcui,
-        p.clinical_product_name as generic_name,
-        1 as priority
-    from products p
-    where p.product_tty in ('SBD', 'BPCK')
-      and p.product_rxcui is not null
-      and p.clinical_product_name is not null
+    where c.rxcui_tty in ('IN', 'MIN', 'PIN')
 
     union
 
@@ -584,11 +630,11 @@ generic_name_candidates as (
     union
 
     select distinct
-        ccp.rxcui,
-        ccp.clinical_product_name as generic_name,
+        cign.rxcui,
+        cign.generic_name,
         2 as priority
-    from concept_clinical_products ccp
-    where ccp.clinical_product_name is not null
+    from concept_ingredient_generic_names cign
+    where cign.generic_name is not null
 
 ),
 
@@ -630,43 +676,6 @@ concept_products as (
     inner join products p
         on ccp.clinical_product_rxcui = p.clinical_product_rxcui
     where p.product_rxcui is not null
-
-),
-
-concept_ingredients as (
-
-    select distinct
-        ccp.rxcui,
-        cpi.ingredient_rxcui,
-        cpi.ingredient_name,
-        cpi.ingredient_tty,
-        cpi.ingredient_role
-    from concept_clinical_products ccp
-    inner join clinical_product_ingredients cpi
-        on ccp.clinical_product_rxcui = cpi.clinical_product_rxcui
-    where cpi.ingredient_rxcui is not null
-
-    union
-
-    select distinct
-        cpi.ingredient_rxcui as rxcui,
-        cpi.ingredient_rxcui,
-        cpi.ingredient_name,
-        cpi.ingredient_tty,
-        cpi.ingredient_role
-    from clinical_product_ingredients cpi
-    where cpi.ingredient_rxcui is not null
-
-    union
-
-    select distinct
-        pif.precise_ingredient_rxcui as rxcui,
-        pif.ingredient_rxcui,
-        pif.ingredient_name,
-        pif.ingredient_tty,
-        'base_ingredient_form' as ingredient_role
-    from precise_ingredient_forms pif
-    where pif.ingredient_rxcui is not null
 
 ),
 
