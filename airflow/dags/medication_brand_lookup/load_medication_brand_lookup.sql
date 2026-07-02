@@ -580,21 +580,55 @@ concept_ingredients as (
 
 ),
 
-concept_ingredient_generic_names as (
+concept_ingredient_generic_name_candidates as (
 
     -- Product-level RxNorm names include strength and dose form. Use only
-    -- base ingredient concepts when deriving a display generic name.
+    -- base ingredient concepts when deriving a display generic name. Prefer
+    -- component ingredients so MIN names do not get mixed with their parts.
+    select distinct
+        ci.rxcui,
+        ci.ingredient_name,
+        case
+            when ci.ingredient_role in ('ingredient_component', 'base_ingredient_form')
+             and ci.ingredient_tty = 'IN'
+                then 1
+            when ci.ingredient_role = 'ingredient'
+             and ci.ingredient_tty in ('IN', 'MIN')
+                then 2
+        end as priority
+    from concept_ingredients ci
+    where ci.ingredient_name is not null
+      and (
+          (
+              ci.ingredient_role in ('ingredient_component', 'base_ingredient_form')
+              and ci.ingredient_tty = 'IN'
+          )
+          or (
+              ci.ingredient_role = 'ingredient'
+              and ci.ingredient_tty in ('IN', 'MIN')
+          )
+      )
+
+),
+
+concept_ingredient_generic_names as (
+
     select
         x.rxcui,
         string_agg(x.ingredient_name, ' / ' order by x.ingredient_name) as generic_name
     from (
         select distinct
-            ci.rxcui,
-            ci.ingredient_name
-        from concept_ingredients ci
-        where ci.ingredient_role = 'ingredient'
-          and ci.ingredient_tty in ('IN', 'MIN')
-          and ci.ingredient_name is not null
+            ranked.rxcui,
+            ranked.ingredient_name
+        from (
+            select
+                cignc.rxcui,
+                cignc.ingredient_name,
+                cignc.priority,
+                min(cignc.priority) over (partition by cignc.rxcui) as best_priority
+            from concept_ingredient_generic_name_candidates cignc
+        ) ranked
+        where ranked.priority = ranked.best_priority
     ) x
     group by x.rxcui
 
@@ -818,6 +852,18 @@ direct_concept_ingredients as (
        and ingredient.rxcui_tty in ('IN', 'MIN')
     where brand.tty = 'BN'
       and brand.sab = 'RXNORM'
+
+    union
+
+    select distinct
+        cpis.ingredient_strength_rxcui as rxcui,
+        cpis.ingredient_component_rxcui as ingredient_rxcui,
+        cpis.ingredient_component_name as ingredient_name,
+        cpis.ingredient_component_tty as ingredient_tty,
+        'ingredient_strength_component' as ingredient_role
+    from sagerx_dev.int_rxnorm_clinical_products_to_ingredient_strengths cpis
+    where cpis.ingredient_strength_rxcui is not null
+      and cpis.ingredient_component_rxcui is not null
 
 ),
 
