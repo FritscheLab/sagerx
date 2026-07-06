@@ -299,6 +299,21 @@ ingredient_strength_ingredients as (
 
 ),
 
+clinical_drug_ingredients as (
+
+    select
+        clinical_drug.rxcui as concept_rxcui
+        , ingredient_component.ingredient_rxcui
+        , ingredient_component.ingredient_name
+    from rxnorm_concepts clinical_drug
+    inner join has_ingredients_relations ingredient_strength_relation
+        on ingredient_strength_relation.rxcui2 = clinical_drug.rxcui
+    inner join ingredient_strength_ingredients ingredient_component
+        on ingredient_component.concept_rxcui = ingredient_strength_relation.rxcui1
+    where clinical_drug.rxnorm_tty = 'SCD'
+
+),
+
 ingredient_dose_form_ingredients as materialized (
 
     select
@@ -360,6 +375,10 @@ generic_concept_ingredients as materialized (
         union all
 
         select * from ingredient_strength_ingredients
+
+        union all
+
+        select * from clinical_drug_ingredients
 
         union all
 
@@ -922,11 +941,13 @@ select
     , inactive_ingredient_concepts.rxcui is not null as is_inactive_ingredient
     , concept_ingredient_name_summary.generic_name
     , case
-        when product_context.concept_rxcui is not null then product_atc."ATC3"
+        when product_context.concept_rxcui is not null
+            then coalesce(product_atc."ATC3", ingredient_atc."ATC3")
         else ingredient_atc."ATC3"
         end as "ATC3"
     , case
-        when product_context.concept_rxcui is not null then product_atc."ATC4"
+        when product_context.concept_rxcui is not null
+            then coalesce(product_atc."ATC4", ingredient_atc."ATC4")
         else ingredient_atc."ATC4"
         end as "ATC4"
     , product_diseases.diseases as diseases
