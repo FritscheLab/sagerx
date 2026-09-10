@@ -791,9 +791,14 @@ product_atc_rows as materialized (
         , atc.atc_3_name
         , atc.atc_4_code
         , atc.atc_4_name
+        , atc5.atc_5_code
+        , atc5.atc_5_name
     from product_atc_keys
     inner join sagerx_dev.atc_codes_to_rxnorm_products atc
         on atc.rxcui = product_atc_keys.atc_rxcui
+    left join sagerx_dev.stg_rxnorm__atc_codes atc5
+        on atc5.ingredient_rxcui::text = product_atc_keys.selected_ingredient_rxcui
+        and atc5.atc_4_code = atc.atc_4_code
 
 ),
 
@@ -801,14 +806,18 @@ product_atc as (
 
     select
         concept_rxcui
-        , jsonb_agg(jsonb_build_object(
+        , jsonb_agg(distinct jsonb_build_object(
             'code', atc_3_code,
             'name', atc_3_name
             )) filter (where atc_3_code is not null) as atc3
-        , jsonb_agg(jsonb_build_object(
+        , jsonb_agg(distinct jsonb_build_object(
             'code', atc_4_code,
             'name', atc_4_name
             )) filter (where atc_4_code is not null) as atc4
+        , jsonb_agg(distinct jsonb_build_object(
+            'code', atc_5_code,
+            'name', atc_5_name
+            )) filter (where atc_5_code is not null) as atc5
     from product_atc_rows
     group by concept_rxcui
 
@@ -827,6 +836,10 @@ product_atc_signatures as (
             distinct concat(atc_4_code, '::', atc_4_name)
             , '||' order by concat(atc_4_code, '::', atc_4_name)
             ) filter (where atc_4_code is not null) as atc4_signature
+        , string_agg(
+            distinct concat(atc_5_code, '::', atc_5_name)
+            , '||' order by concat(atc_5_code, '::', atc_5_name)
+            ) filter (where atc_5_code is not null) as atc5_signature
     from product_atc_rows
     group by
         selected_ingredient_rxcui
@@ -844,6 +857,9 @@ ingredient_atc_consistency as (
         , count(distinct atc4_signature) filter (
             where atc4_signature is not null
             ) as atc4_signature_count
+        , count(distinct atc5_signature) filter (
+            where atc5_signature is not null
+            ) as atc5_signature_count
     from product_atc_signatures
     group by selected_ingredient_rxcui
 
@@ -867,6 +883,13 @@ ingredient_atc as (
                     'name', product_atc_rows.atc_4_name
                     )) filter (where product_atc_rows.atc_4_code is not null)
             end as atc4
+        , case
+            when max(ingredient_atc_consistency.atc5_signature_count) = 1
+                then jsonb_agg(distinct jsonb_build_object(
+                    'code', product_atc_rows.atc_5_code,
+                    'name', product_atc_rows.atc_5_name
+                    )) filter (where product_atc_rows.atc_5_code is not null)
+            end as atc5
     from product_atc_rows
     inner join ingredient_atc_consistency
         on ingredient_atc_consistency.ingredient_rxcui = product_atc_rows.selected_ingredient_rxcui
@@ -877,9 +900,10 @@ ingredient_atc as (
 direct_ingredient_atc as (
 
     select
-        coalesce(atc3.ingredient_rxcui, atc4.ingredient_rxcui) as ingredient_rxcui
+        coalesce(atc3.ingredient_rxcui, atc4.ingredient_rxcui, atc5.ingredient_rxcui) as ingredient_rxcui
         , atc3.atc3
         , atc4.atc4
+        , atc5.atc5
     from (
         select
             ingredient_rxcui::text as ingredient_rxcui
@@ -923,6 +947,28 @@ direct_ingredient_atc as (
         group by ingredient_rxcui
     ) atc4
         on atc4.ingredient_rxcui = atc3.ingredient_rxcui
+    full outer join (
+        select
+            ingredient_rxcui::text as ingredient_rxcui
+            , jsonb_agg(
+                jsonb_build_object(
+                    'code', atc_5_code,
+                    'name', atc_5_name
+                )
+                order by atc_5_code, atc_5_name
+            ) as atc5
+        from (
+            select distinct
+                ingredient_rxcui
+                , atc_5_code
+                , atc_5_name
+            from sagerx_dev.stg_rxnorm__atc_codes
+            where ingredient_rxcui is not null
+                and atc_5_code is not null
+        ) atc5_rows
+        group by ingredient_rxcui
+    ) atc5
+        on atc5.ingredient_rxcui = coalesce(atc3.ingredient_rxcui, atc4.ingredient_rxcui)
 
 ),
 
@@ -960,12 +1006,30 @@ clinical_drug_ingredient_atc4_rows as (
 
 ),
 
+clinical_drug_ingredient_atc5_rows as (
+
+    select distinct
+        clinical_drug_ingredients.concept_rxcui
+        , atc5.value as atc
+    from clinical_drug_ingredients
+    left join inactive_ingredient_concepts inactive_ingredient
+        on inactive_ingredient.rxcui = clinical_drug_ingredients.ingredient_rxcui
+    inner join ingredient_atc
+        on ingredient_atc.ingredient_rxcui = clinical_drug_ingredients.ingredient_rxcui
+    inner join lateral jsonb_array_elements(ingredient_atc.atc5) atc5(value)
+        on true
+    where inactive_ingredient.rxcui is null
+        and atc5.value <> 'null'::jsonb
+
+),
+
 clinical_drug_ingredient_atc as (
 
     select
-        coalesce(atc3.concept_rxcui, atc4.concept_rxcui) as concept_rxcui
+        coalesce(atc3.concept_rxcui, atc4.concept_rxcui, atc5.concept_rxcui) as concept_rxcui
         , atc3.atc3
         , atc4.atc4
+        , atc5.atc5
     from (
         select
             concept_rxcui
@@ -981,6 +1045,14 @@ clinical_drug_ingredient_atc as (
         group by concept_rxcui
     ) atc4
         on atc4.concept_rxcui = atc3.concept_rxcui
+    full outer join (
+        select
+            concept_rxcui
+            , jsonb_agg(atc order by atc ->> 'code', atc ->> 'name') as atc5
+        from clinical_drug_ingredient_atc5_rows
+        group by concept_rxcui
+    ) atc5
+        on atc5.concept_rxcui = coalesce(atc3.concept_rxcui, atc4.concept_rxcui)
 
 ),
 
@@ -1034,12 +1106,38 @@ branded_concept_ingredient_atc4_rows as (
 
 ),
 
+branded_concept_ingredient_atc5_rows as (
+
+    select distinct
+        concept_ingredients.concept_rxcui
+        , atc5.value as atc
+    from concept_ingredients
+    inner join rxnorm_concepts concept
+        on concept.rxcui = concept_ingredients.concept_rxcui
+        and concept.rxnorm_tty in ('BN', 'SBD', 'SBDC', 'SBDF', 'SBDFP', 'SBDG')
+    left join inactive_ingredient_concepts inactive_ingredient
+        on inactive_ingredient.rxcui = concept_ingredients.ingredient_rxcui
+    left join form_of_relations base_ingredient_relation
+        on base_ingredient_relation.rxcui2 = concept_ingredients.ingredient_rxcui
+    left join rxnorm_concepts base_ingredient
+        on base_ingredient.rxcui = base_ingredient_relation.rxcui1
+        and base_ingredient.rxnorm_tty in ('IN', 'MIN')
+    inner join ingredient_atc
+        on ingredient_atc.ingredient_rxcui = coalesce(base_ingredient.rxcui, concept_ingredients.ingredient_rxcui)
+    inner join lateral jsonb_array_elements(ingredient_atc.atc5) atc5(value)
+        on true
+    where inactive_ingredient.rxcui is null
+        and atc5.value <> 'null'::jsonb
+
+),
+
 branded_concept_ingredient_atc as (
 
     select
-        coalesce(atc3.concept_rxcui, atc4.concept_rxcui) as concept_rxcui
+        coalesce(atc3.concept_rxcui, atc4.concept_rxcui, atc5.concept_rxcui) as concept_rxcui
         , atc3.atc3
         , atc4.atc4
+        , atc5.atc5
     from (
         select
             concept_rxcui
@@ -1055,6 +1153,14 @@ branded_concept_ingredient_atc as (
         group by concept_rxcui
     ) atc4
         on atc4.concept_rxcui = atc3.concept_rxcui
+    full outer join (
+        select
+            concept_rxcui
+            , jsonb_agg(atc order by atc ->> 'code', atc ->> 'name') as atc5
+        from branded_concept_ingredient_atc5_rows
+        group by concept_rxcui
+    ) atc5
+        on atc5.concept_rxcui = coalesce(atc3.concept_rxcui, atc4.concept_rxcui)
 
 ),
 
@@ -1134,6 +1240,11 @@ select
             then coalesce(product_atc.atc4, direct_ingredient_atc.atc4, ingredient_atc.atc4, clinical_drug_ingredient_atc.atc4, branded_concept_ingredient_atc.atc4)
         else coalesce(direct_ingredient_atc.atc4, ingredient_atc.atc4, clinical_drug_ingredient_atc.atc4, branded_concept_ingredient_atc.atc4)
         end, '[null]'::jsonb) as atc4
+    , nullif(case
+        when product_context.concept_rxcui is not null
+            then coalesce(product_atc.atc5, direct_ingredient_atc.atc5, ingredient_atc.atc5, clinical_drug_ingredient_atc.atc5, branded_concept_ingredient_atc.atc5)
+        else coalesce(direct_ingredient_atc.atc5, ingredient_atc.atc5, clinical_drug_ingredient_atc.atc5, branded_concept_ingredient_atc.atc5)
+        end, '[null]'::jsonb) as atc5
     , nullif(product_diseases.diseases, '[null]'::jsonb) as diseases
 from rxnorm_concepts concept
 left join concept_fields
