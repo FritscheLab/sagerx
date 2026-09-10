@@ -36,20 +36,36 @@ def nadac():
                 self.dataset_dict = self._build_dataset()
 
             def _build_dataset(self):
-                url = "https://data.medicaid.gov/api/1/search/?sort=modified&sort-order=desc&theme=National%20Average%20Drug%20Acquisition%20Cost"
-                response = requests.get(url)
+                url = "https://data.medicaid.gov/api/1/search/"
+                params = {
+                    "sort": "modified",
+                    "sort-order": "desc",
+                    "fulltext": "NADAC (National Average Drug Acquisition Cost)",
+                    "page-size": 100,
+                }
+                response = requests.get(url, params=params, timeout=30)
                 response.raise_for_status()
                 result_json = response.json()["results"]
+                results = (
+                    result_json.values()
+                    if isinstance(result_json, dict)
+                    else result_json
+                )
                 dataset_dict = {}
-                for key, value in result_json.items():
+                for value in results:
                     dataset_dict[value["title"]] = value["distribution"][0][
                         "downloadURL"
                     ]
+                if not dataset_dict:
+                    raise ValueError("No NADAC datasets found in the Medicaid catalog")
                 return dataset_dict
 
             def get_download_url(self, year):
                 title = f"NADAC (National Average Drug Acquisition Cost) {year}"
-                url = self.dataset_dict[title]
+                try:
+                    url = self.dataset_dict[title]
+                except KeyError:
+                    raise ValueError(f"NADAC dataset not found for {year}")
                 self.title = title
                 self.url = url
                 return title, url
